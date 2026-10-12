@@ -1,76 +1,99 @@
 # UnRAR
 
-A WinRAR-style archive manager for Windows — GUI + CLI, released as
-**open source under the MIT license**.
+An open-source archive manager for Windows with a WinRAR-style workflow,
+written in **Rust** (egui/eframe GUI). MIT licensed — contains no RARLAB code.
 
-Ships as a single executable:
-
-- **`UnRAR.exe`** — graphical archive manager (windowed), prebuilt in
-  [`dist/`](dist/). No Python required.
-
-A console interface with real-unrar-style commands is available from
-source: `python unrar.py l|t|x|a|i <args>` (not shipped as an exe).
+![License](https://img.shields.io/badge/license-MIT-blue)
 
 ## Features
 
-| Action | ZIP | RAR / .rev / volumes | TAR/GZ/BZ2/XZ | 7z / CAB / ZST |
-|--------|-----|----------------------|----------------|-----------------|
-| List   | ✔ native | ✔ via UnRAR.exe backend | ✔ native | detected, needs external tool |
-| Extract| ✔ native (incl. ZipCrypto) | ✔ via UnRAR.exe backend | ✔ native | — |
-| Test   | ✔ CRC32 verify | ✔ via backend | ✔ stream-verify | — |
-| Create / Add / Delete | ✔ ZIP (Store–Best) | ✖ proprietary | — | — |
+- **File manager + archive browser** — opens into the filesystem like WinRAR;
+  double-click an archive to descend into it, folders inside archives are
+  navigable.
+- **Signature-based format detection** (not extensions): RAR4/RAR5/REV, ZIP,
+  7z, TAR, GZip, BZip2, XZ, Zstandard, CAB, SFX stubs — the same magic-byte
+  checks WinRAR performs.
+- **ZIP full support** — create/add/extract/test/delete, Store..Best levels,
+  AES-256 encryption, archive comments, SFX builder.
+- **RAR/RAR5** — list, extract, CRC test, member read — natively in-process
+  via the vendored UnRAR engine (`unrar` crate). Multivolume `.rar/.r00`,
+  `.rev`, solid/locked/recovery metadata reported in Info.
+- **TAR/GZ/BZ2/XZ/ZST** — list/extract/read members.
+- **7z** — list/extract/read members (LZMA/LZMA2 etc via `sevenz-rust`).
+- **Internal viewer** — text + hex modes (double-click / Enter / View),
+  no temp files.
+- **Toolbar + menus mirroring WinRAR**: Add, Extract to, Test, View, Delete,
+  Find, Comment, Lock, Scan (Windows Defender), SFX, Info, About.
+- **Dialogs**: "Archive name and parameters" (format, level, AES password,
+  comment, SFX), "Extraction path and options", archive information,
+  comment editor, about.
+- **Sortable columns**: Name / Size / Packed / Type / Modified / CRC32 /
+  Ratio / Method. Encrypted entries shown in red.
+- Drag & drop files into the window (open archives / add to ZIP),
+  right-click context menu, Ctrl+A/F/I/O/T/E, Del, Enter, Backspace,
+  find-as-you-type filter bar, recent-archives menu, two-pane status bar.
 
-- **Content-signature format detection** — reads magic bytes
-  (`Rar!\x1a\x07`, `Rar!\x1aRev`, `PK\x03\x04`, `ustar`, …), not extensions.
-- RAR reading delegates to the freeware `UnRAR.exe` backend — found
-  automatically in `C:\Program Files\WinRAR`, on `PATH`, next to the app, or
-  via the `UNRAR_EXE` environment variable.
-- GUI: sortable Name/Size/Packed/Type/Modified/CRC32/Ratio/Method columns,
-  Add / Extract-to / Test / Delete / Info toolbar, Ctrl+F find bar,
-  right-click menu, ZIP comment editor, archive lock, recent archives.
-- **Internal viewer** — double-click or Enter opens a member directly in a
-  viewer window (text auto-detected; hex mode with offset/ASCII dump;
-  toggle Text/Hex). No temp extraction or external app needed.
+## Formats
 
-## Run
+| Format | List | Extract | Test | Create | Notes |
+|---|---|---|---|---|---|
+| ZIP | ✔ | ✔ | ✔ | ✔ | AES-256 encrypt/decrypt, comments, SFX |
+| RAR/RAR5, .rev | ✔ | ✔ | ✔ | ✘ | via vendored UnRAR; multivolume |
+| 7z | ✔ | ✔ | ✔ | ✘ | via `sevenz-rust` |
+| TAR/GZ/BZ2/XZ/ZST | ✔ | ✔ | ✔ | ✘ | |
+| CAB | detect | — | — | — | listed as supported-only |
 
-```console
-UnRAR.exe                  :: GUI
-UnRAR.exe archive.zip      :: GUI opens an archive directly
+RAR **creation** is proprietary (RARLAB license) — UnRAR writes ZIP/TAR.
+
+## Build
+
+Requirements: Rust toolchain (`rustup`, MSVC target) + Visual Studio
+BuildTools linker.
+
+```bat
+build_exe.bat        rem cargo build --release -> dist\UnRAR.exe
 ```
 
-## Run from source
+or:
 
-```console
-python unrar.py gui archive.zip
-python unrar.py l archive.zip
+```bat
+cargo build --release
+target\release\UnRAR.exe
 ```
 
-## Build the executables
+## Command line (same exe)
 
-```console
-python -m pip install -r requirements-build.txt
-build_exe.bat
+`UnRAR.exe` also works from a terminal (attaches to the parent console):
+
+```
+UnRAR.exe l <archive>          list
+UnRAR.exe t <archive>          test (CRC verify)
+UnRAR.exe x <archive> [dest]   extract all
+UnRAR.exe a <zip> <files...>   add to zip
+UnRAR.exe i <archive>          info
+UnRAR.exe <archive>            open GUI on archive
 ```
 
-Produces `dist\UnRAR.exe` (windowed) with embedded version info.
+## Self-extracting archives
 
-## Source layout
+"Create SFX" appends a ZIP to a copy of `UnRAR.exe`. Running the result
+prompts for a destination and extracts itself — no UnRAR install needed
+on the target machine.
 
-- `unrar.py` — CLI + entry point
-- `unrar_gui.py` — Tkinter GUI (`UnRARApp`)
-- `unrar_engine.py` — signature detection + archive operations
-- `build_exe.bat`, `version.txt`, `requirements-build.txt` — build tooling
-- `UnRAR.spec`, `unrar.spec` — generated PyInstaller specs
+## Layout
 
-## Limitations
-
-RAR *creation* is proprietary — only extraction is possible without
-RARLAB's licensed encoder, so UnRAR writes standard ZIP. WinZip-AES zips,
-7z, and CAB are detected but need their own backends.
+```
+src/engine.rs   archive engine (detect/list/extract/test/read/write/SFX)
+src/app.rs      egui application — menus, toolbar, table, dialogs, workers
+src/viewer.rs   internal viewer window (text + hex)
+src/icons.rs    embedded icon assets
+src/main.rs     entry point: SFX check -> CLI -> GUI
+assets/         generated pixel-art icons (tools/gen_icons.py)
+unrar.rc        Windows version + icon resources (build.rs/embed-resource)
+```
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Contains no RARLAB code; the optional
-`UnRAR.exe` backend is distributed separately by RARLAB under its own
-freeware license.
+MIT — see `LICENSE`. `unrar` crate vendors the UnRAR source
+(usage terms apply to the RAR format; this project contains no
+RARLAB-authored Rust code).

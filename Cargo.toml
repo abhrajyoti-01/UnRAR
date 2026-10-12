@@ -1,0 +1,32 @@
+[package]
+name = "unrar-app"
+version = "1.0.0"
+edition = "2021"
+
+[[bin]]
+name = "UnRAR"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+bzip2 = "0.6.1"
+eframe = "0.36.2"
+egui_extras = { version = "0.36.2", features = ["all_loaders"] }
+flate2 = "1.1.10"
+rfd = "0.17.2"
+tar = "0.4.46"
+unrar = "0.5.8"
+xz2 = "0.1.7"
+zstd = "0.14.2"
+zip = { version = "9.0.2", features = ["aes-crypto", "deflate", "deflate64",
+        "bzip2", "zstd"] }
+sevenz-rust = "0.6.1"
+time = "0.3.55"
+egui = "0.36.2"
+
+[build-dependencies]
+embed-resource = "3.0.12"
+
+[profile.release]
+lto = "thin"
+opt-level = 3

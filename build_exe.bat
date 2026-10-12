@@ -1,16 +1,6 @@
 @echo off
-rem Build the UnRAR executable (requires: python -m pip install pyinstaller)
-rem Produces dist\UnRAR.exe (GUI). The CLI remains available from source:
-rem   python unrar.py l|t|x|a|i <args>
-
-python -m PyInstaller --noconfirm --clean --onefile --windowed ^
-  --name UnRAR --version-file version.txt unrar_gui.py
-if errorlevel 1 goto :fail
-
-echo.
-echo Built: dist\UnRAR.exe  (GUI)
-goto :eof
-
-:fail
-echo Build failed.
-exit /b 1
+rem UnRAR — release build (Rust / egui)
+cargo build --release || exit /b 1
+if not exist dist mkdir dist
+copy /y target\release\UnRAR.exe dist\UnRAR.exe
+echo Built dist\UnRAR.exe

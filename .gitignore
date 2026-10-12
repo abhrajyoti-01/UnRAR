@@ -1,5 +1,4 @@
+/target
+/dist
+*.unrar_tmp
 __pycache__/
-*.pyc
-*.pyo
-build/
-dist/
