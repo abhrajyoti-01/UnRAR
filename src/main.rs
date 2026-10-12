@@ -91,8 +91,31 @@ fn cli(args: &[String]) -> i32 {
         "a" => {
             let files: Vec<PathBuf> =
                 args[3..].iter().map(PathBuf::from).collect();
-            match engine::zip_add(&arc, &files, 6, None, None) {
-                Ok(n) => { println!("Added {n} file(s) to {}", arc.display()); 0 }
+            let name = arc.to_string_lossy().to_lowercase();
+            let res: anyhow::Result<String> = if name.ends_with(".rar") {
+                engine::rar_create(&arc, &files, &engine::RarOpts {
+                    level: 3, ..Default::default()
+                }).map(|s| s)
+            } else if name.ends_with(".tar") || name.ends_with(".tar.gz")
+                || name.ends_with(".tgz") || name.ends_with(".tar.bz2")
+                || name.ends_with(".tar.xz") || name.ends_with(".tar.zst") {
+                let fmt = if name.contains("gz") || name.ends_with("tgz") {
+                    engine::Format::Gz
+                } else if name.contains("bz2") {
+                    engine::Format::Bz2
+                } else if name.contains("xz") {
+                    engine::Format::Xz
+                } else if name.contains("zst") {
+                    engine::Format::Zst
+                } else { engine::Format::Tar };
+                engine::tar_create(&arc, &files, fmt)
+                    .map(|n| format!("TAR created ({n} items)"))
+            } else {
+                engine::zip_add(&arc, &files, 6, None, None)
+                    .map(|n| format!("Added {n} file(s) to {}", arc.display()))
+            };
+            match res {
+                Ok(s) => { println!("{s}"); 0 }
                 Err(e) => { eprintln!("error: {e}"); 1 }
             }
         }

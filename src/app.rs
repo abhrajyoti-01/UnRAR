@@ -71,6 +71,11 @@ struct AddDialog {
     password: String,
     comment: String,
     make_sfx: bool,
+    solid: bool,
+    recovery: bool,
+    lock: bool,
+    dict_idx: usize,
+    volume: String,
     files: Vec<PathBuf>,
 }
 
@@ -911,11 +916,13 @@ impl UnRARApp {
                     ui.end_row();
                     ui.label("Format:");
                     egui::ComboBox::from_id_salt("fmt")
-                        .selected_text(["ZIP", "TAR", "TAR.GZ", "TAR.BZ2",
-                                        "TAR.XZ"][d.format_idx])
+                        .selected_text(["ZIP", "RAR", "TAR", "TAR.GZ",
+                                        "TAR.BZ2", "TAR.XZ", "TAR.ZST"]
+                                        [d.format_idx])
                         .show_ui(ui, |ui| {
-                            for (i, f) in ["ZIP", "TAR", "TAR.GZ", "TAR.BZ2",
-                                           "TAR.XZ"].iter().enumerate() {
+                            for (i, f) in ["ZIP", "RAR", "TAR", "TAR.GZ",
+                                           "TAR.BZ2", "TAR.XZ", "TAR.ZST"]
+                                           .iter().enumerate() {
                                 ui.selectable_value(&mut d.format_idx, i, *f);
                             }
                         });
@@ -929,18 +936,49 @@ impl UnRARApp {
                             }
                         });
                     ui.end_row();
-                    if d.format_idx == 0 {
-                        ui.label("Password (AES-256):");
-                        ui.add(egui::TextEdit::singleline(&mut d.password)
-                            .password(true));
-                        ui.end_row();
-                        ui.label("Comment:");
-                        ui.text_edit_singleline(&mut d.comment);
-                        ui.end_row();
-                        ui.label("");
-                        ui.checkbox(&mut d.make_sfx,
-                            "Create self-extracting archive (SFX .exe)");
-                        ui.end_row();
+                    match d.format_idx {
+                        0 => {
+                            ui.label("Password (AES-256):");
+                            ui.add(egui::TextEdit::singleline(&mut d.password)
+                                .password(true));
+                            ui.end_row();
+                            ui.label("Comment:");
+                            ui.text_edit_singleline(&mut d.comment);
+                            ui.end_row();
+                            ui.label("");
+                            ui.checkbox(&mut d.make_sfx,
+                                "Create self-extracting archive (SFX .exe)");
+                            ui.end_row();
+                        }
+                        1 => {
+                            ui.label("Password:");
+                            ui.add(egui::TextEdit::singleline(&mut d.password)
+                                .password(true));
+                            ui.end_row();
+                            ui.label("Dictionary:");
+                            egui::ComboBox::from_id_salt("dict")
+                                .selected_text(engine::RAR_DICTS[d.dict_idx])
+                                .show_ui(ui, |ui| {
+                                    for (i, n) in engine::RAR_DICTS.iter()
+                                        .enumerate() {
+                                        ui.selectable_value(&mut d.dict_idx,
+                                                            i, *n);
+                                    }
+                                });
+                            ui.end_row();
+                            ui.label("Volume size:");
+                            ui.text_edit_singleline(&mut d.volume);
+                            ui.end_row();
+                            ui.label("");
+                            ui.horizontal(|ui| {
+                                ui.checkbox(&mut d.solid, "Solid");
+                                ui.checkbox(&mut d.recovery,
+                                            "Recovery record");
+                                ui.checkbox(&mut d.lock, "Lock");
+                            });
+                            ui.end_row();
+                        }
+                        _ => {}
                     }
                 });
                 ui.add_space(6.0);
@@ -948,16 +986,30 @@ impl UnRARApp {
                     if ui.button("OK").clicked() { do_create = true; }
                     if ui.button("Cancel").clicked() { cancel = true; }
                 });
-                ui.small("RAR creation is proprietary — UnRAR writes ZIP/TAR.");
+                ui.small("RAR writing uses the installed WinRAR Rar.exe.");
             });
         if cancel { open = false; }
         self.add_dlg.open = open;
         if do_create {
             let d = std::mem::take(&mut self.add_dlg);
-            let out = PathBuf::from(&d.name);
-            let out = if d.make_sfx && d.format_idx == 0 {
-                out.with_extension("exe")
-            } else { out };
+            const EXTS: [&str; 7] = ["zip", "rar", "tar", "tar.gz",
+                                     "tar.bz2", "tar.xz", "tar.zst"];
+            let ext = EXTS[d.format_idx];
+            let mut out = PathBuf::from(&d.name);
+            // normalize the extension to the chosen format
+            {
+                let n = d.name.to_lowercase();
+                for e in &["tar.gz", "tar.bz2", "tar.xz", "tar.zst",
+                           "zip", "rar", "tar", "gz", "bz2", "xz", "zst",
+                           "exe", "7z"] {
+                    if n.ends_with(&format!(".{e}")) {
+                        out.set_file_name(&n[..n.len() - e.len() - 1]);
+                        break;
+                    }
+                }
+                let base = out.to_string_lossy().into_owned();
+                out = PathBuf::from(format!("{base}.{ext}"));
+            }
             let pwd = if d.password.is_empty() { None }
                       else { Some(d.password) };
             let cmt = if d.comment.is_empty() { None }
@@ -965,6 +1017,15 @@ impl UnRARApp {
             let lvl = engine::LEVELS[d.level_idx].1;
             let fmt_idx = d.format_idx;
             let make_sfx = d.make_sfx;
+            let ropts = engine::RarOpts {
+                level: (d.level_idx as i64).min(5),
+                password: pwd.clone(),
+                solid: d.solid, recovery: d.recovery, lock: d.lock,
+                dict: if d.dict_idx == 0 { None }
+                      else { Some(engine::RAR_DICTS[d.dict_idx].into()) },
+                volume: if d.volume.trim().is_empty() { None }
+                        else { Some(d.volume) },
+            };
             let files = d.files;
             self.run_bg("Creating archive…", move || {
                 (|| -> Result<Msg, String> {
@@ -974,13 +1035,26 @@ impl UnRARApp {
                                             pwd.as_deref(), cmt.as_deref())
                                 .map_err(|e| e.to_string())?;
                             if make_sfx {
-                                engine::make_sfx(&out.with_extension("zip")
-                                    .canonicalize().unwrap_or(out.clone()), &out)
+                                let sfx = out.with_extension("exe");
+                                engine::make_sfx(&out, &sfx)
                                     .map_err(|e| e.to_string())?;
+                                let _ = std::fs::remove_file(&out);
                             }
                             Ok(Msg::Done("Archive created".into()))
                         }
-                        _ => Err("TAR writing not yet wired — pick ZIP".into()),
+                        1 => {
+                            engine::rar_create(&out, &files, &ropts)
+                                .map(Msg::Done).map_err(|e| e.to_string())
+                        }
+                        _ => {
+                            let fmt = [Format::Tar, Format::Gz, Format::Bz2,
+                                       Format::Xz, Format::Zst]
+                                       [fmt_idx - 2];
+                            engine::tar_create(&out, &files, fmt)
+                                .map(|n| Msg::Done(
+                                    format!("TAR created ({n} items)")))
+                                .map_err(|e| e.to_string())
+                        }
                     }
                 })()
             });

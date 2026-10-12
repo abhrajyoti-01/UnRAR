@@ -560,6 +560,9 @@ pub fn test_archive(path: &Path) -> Result<String> {
 
 // ---- ZIP write ops ----
 
+pub const RAR_DICTS: &[&str] = &["Auto", "1M", "4M", "8M", "16M", "32M",
+    "64M", "128M", "256M", "512M", "1G"];
+
 pub const LEVELS: &[(&str, i64)] = &[
     ("Store", 0), ("Fastest", 1), ("Fast", 3),
     ("Normal", 6), ("Good", 7), ("Best", 9),
@@ -656,6 +659,115 @@ pub fn zip_delete(path: &Path, names: &[String]) -> Result<usize> {
 pub fn zip_comment(path: &Path) -> Result<String> {
     let zf = zip::ZipArchive::new(File::open(path)?)?;
     Ok(String::from_utf8_lossy(zf.comment()).into_owned())
+}
+
+// ---- TAR write ----
+
+/// Create a TAR archive (optionally compressed) containing `files`.
+/// Directory inputs are added recursively under their own name.
+pub fn tar_create(path: &Path, files: &[PathBuf], fmt: Format) -> Result<usize> {
+    let f = File::create(path)?;
+    let w: Box<dyn Write> = match fmt {
+        Format::Gz => Box::new(flate2::write::GzEncoder::new(
+            f, flate2::Compression::new(6))),
+        Format::Bz2 => Box::new(bzip2::write::BzEncoder::new(
+            f, bzip2::Compression::best())),
+        Format::Xz => Box::new(xz2::write::XzEncoder::new(f, 6)),
+        Format::Zst => Box::new(zstd::stream::Encoder::new(f, 3)?
+            .auto_finish()),
+        _ => Box::new(f),
+    };
+    let mut b = tar::Builder::new(w);
+    let mut count = 0usize;
+    for p in files {
+        let name = p.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "file".into());
+        if p.is_dir() {
+            b.append_dir_all(&name, p)?;
+            count += std::fs::read_dir(p)?.count();
+        } else {
+            b.append_path_with_name(p, &name)?;
+            count += 1;
+        }
+    }
+    let mut inner = b.into_inner()?;
+    inner.flush()?;
+    drop(inner);
+    Ok(count)
+}
+
+// ---- RAR write via the licensed WinRAR CLI ----
+
+#[derive(Default, Clone)]
+pub struct RarOpts {
+    pub level: i64,                  // 0..5 -> -m0..-m5
+    pub password: Option<String>,    // -p<pwd>
+    pub solid: bool,                 // -s
+    pub recovery: bool,              // -rr3
+    pub lock: bool,                  // -k
+    pub dict: Option<String>,        // -md<size>
+    pub volume: Option<String>,      // -v<size>
+}
+
+/// Locate the licensed RAR command-line archiver.
+pub fn find_rar() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("UNRAR_RAR_EXE") {
+        let p = PathBuf::from(p);
+        if p.is_file() { return Some(p); }
+    }
+    for cand in [r"C:\Program Files\WinRAR\Rar.exe",
+                 r"C:\Program Files (x86)\WinRAR\Rar.exe"] {
+        let p = Path::new(cand);
+        if p.is_file() { return Some(p.to_path_buf()); }
+    }
+    if let Ok(o) = std::process::Command::new("where")
+        .arg("Rar.exe").output() {
+        if o.status.success() {
+            let out = String::from_utf8_lossy(&o.stdout);
+            if let Some(first) = out.lines().next() {
+                let p = PathBuf::from(first.trim());
+                if p.is_file() { return Some(p); }
+            }
+        }
+    }
+    None
+}
+
+/// Create a .rar archive by driving the installed Rar.exe.
+/// RAR compression is proprietary (RARLAB) — there is no legal open
+/// encoder, so creation goes through the user's licensed WinRAR copy.
+pub fn rar_create(archive: &Path, files: &[PathBuf], o: &RarOpts)
+    -> Result<String>
+{
+    let exe = find_rar().ok_or_else(|| anyhow!(
+        "RAR creation needs WinRAR's Rar.exe installed \
+         (set UNRAR_RAR_EXE to its path)"))?;
+    let mut args: Vec<String> = vec![
+        "a".into(), "-cfg-".into(), "-idq".into(), "-y".into(), "-r".into(),
+        "-ep1".into(), format!("-m{}", o.level.clamp(0, 5)),
+    ];
+    if let Some(p) = &o.password {
+        args.push(format!("-p{p}"));
+    }
+    if o.solid    { args.push("-s".into()); }
+    if o.recovery { args.push("-rr3".into()); }
+    if o.lock     { args.push("-k".into()); }
+    if let Some(d) = &o.dict   { args.push(format!("-md{d}")); }
+    if let Some(v) = &o.volume { args.push(format!("-v{v}")); }
+    args.push("--".into());
+    args.push(archive.to_string_lossy().into_owned());
+    for f in files {
+        args.push(f.to_string_lossy().into_owned());
+    }
+    let out = std::process::Command::new(exe).args(&args).output()?;
+    if out.status.success() {
+        Ok("RAR archive created".to_string())
+    } else {
+        bail!("Rar.exe failed ({}): {}",
+              out.status,
+              String::from_utf8_lossy(&out.stderr))
+    }
 }
 
 pub fn zip_set_comment(path: &Path, comment: &str) -> Result<()> {
