@@ -23,6 +23,7 @@ zip = { version = "9.0.2", features = ["aes-crypto", "deflate", "deflate64",
 sevenz-rust = "0.6.1"
 time = "0.3.55"
 egui = "0.36.2"
+crc32fast = "1.5.2"
 
 [build-dependencies]
 embed-resource = "3.0.12"

@@ -93,9 +93,8 @@ fn cli(args: &[String]) -> i32 {
                 args[3..].iter().map(PathBuf::from).collect();
             let name = arc.to_string_lossy().to_lowercase();
             let res: anyhow::Result<String> = if name.ends_with(".rar") {
-                engine::rar_create(&arc, &files, &engine::RarOpts {
-                    level: 3, ..Default::default()
-                }).map(|s| s)
+                engine::rar4_store_create(&arc, &files)
+                    .map(|n| format!("RAR created ({n} files, stored)"))
             } else if name.ends_with(".tar") || name.ends_with(".tar.gz")
                 || name.ends_with(".tgz") || name.ends_with(".tar.bz2")
                 || name.ends_with(".tar.xz") || name.ends_with(".tar.zst") {

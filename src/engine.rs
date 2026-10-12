@@ -697,7 +697,125 @@ pub fn tar_create(path: &Path, files: &[PathBuf], fmt: Format) -> Result<usize> 
     Ok(count)
 }
 
-// ---- RAR write via the licensed WinRAR CLI ----
+// ---- RAR write: native store-mode writer (independent) ----
+//
+// RAR4 container is publicly documented in RARLAB's unrar technote.txt.
+// Store (method 0x30) archives contain uncompressed members — no
+// proprietary compressor needed, output opens/tests in WinRAR/UnRAR/7z.
+
+const RAR4_SIG: [u8; 7] = [0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00];
+const RAR4_MAIN: u8 = 0x73;
+const RAR4_FILE: u8 = 0x74;
+const RAR4_END: u8 = 0x7b;
+const LHD_LONG_BLOCK: u16 = 0x8000;   // ADD_SIZE field present
+
+fn crc32(data: &[u8]) -> u32 {
+    crc32fast::hash(data)
+}
+
+fn dos_time_now() -> u32 {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+    epoch_to_dos(secs as i64)
+}
+
+fn epoch_to_dos(secs: i64) -> u32 {
+    // days-civil algorithm -> Y/M/D, then DOS pack
+    let days = secs / 86400;
+    let rem = secs % 86400;
+    let (hh, mm, ss) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z.rem_euclid(146097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let yr = if m <= 2 { y + 1 } else { y };
+    (((yr.max(1980) - 1980) as u32) << 25) | ((m as u32) << 21)
+        | ((d as u32) << 16) | ((hh as u32) << 11) | ((mm as u32) << 5)
+        | ((ss as u32) / 2)
+}
+
+fn rar4_block(out: &mut Vec<u8>, typ: u8, flags: u16, body: &[u8],
+              add_size: Option<u32>) {
+    let mut h = Vec::with_capacity(7 + body.len());
+    h.push(typ);
+    h.extend_from_slice(&flags.to_le_bytes());
+    let head_size = (7 + body.len() + if flags & LHD_LONG_BLOCK != 0 { 4 } else { 0 })
+        as u16;
+    h.extend_from_slice(&head_size.to_le_bytes());
+    if flags & LHD_LONG_BLOCK != 0 {
+        h.extend_from_slice(&add_size.unwrap_or(0).to_le_bytes());
+    }
+    h.extend_from_slice(body);
+    let crc = crc32(&h) as u16;
+    out.extend_from_slice(&crc.to_le_bytes());
+    out.extend_from_slice(&h);
+}
+
+/// Create a RAR4 store-mode archive entirely in-process — no external
+/// tools, no proprietary codec. Members are stored uncompressed.
+pub fn rar4_store_create(path: &Path, files: &[PathBuf]) -> Result<usize> {
+    let mut members: Vec<(PathBuf, String)> = Vec::new();
+    for p in files {
+        collect_paths(p, p, &mut members);
+    }
+    let mut out = Vec::new();
+    out.extend_from_slice(&RAR4_SIG);
+    // main header: type 0x73, flags 0, 6 reserved bytes
+    rar4_block(&mut out, RAR4_MAIN, 0, &[0u8; 6], None);
+    for (fs_path, arc_name) in &members {
+        let data = std::fs::read(fs_path)?;
+        let name = arc_name.replace('/', "\\");   // RAR uses '\' separators
+        let ftime = std::fs::metadata(fs_path).ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| epoch_to_dos(d.as_secs() as i64))
+            .unwrap_or_else(dos_time_now);
+        let attr = std::fs::metadata(fs_path)
+            .map(|m| if m.is_dir() { 0x10u32 } else { 0x20u32 })
+            .unwrap_or(0x20);
+        let mut body = Vec::with_capacity(21 + name.len());
+        // packed size lives in the block header's ADD_SIZE field —
+        // there is no separate PACK_SIZE in the RAR4 file body.
+        body.extend_from_slice(&(data.len() as u32).to_le_bytes()); // UNP_SIZE
+        body.push(2u8);                                   // HOST_OS = Win32
+        body.extend_from_slice(&crc32(&data).to_le_bytes());        // FILE_CRC
+        body.extend_from_slice(&ftime.to_le_bytes());               // FTIME
+        body.push(20u8);                                  // UNP_VER 2.0
+        body.push(0x30u8);                                // METHOD store
+        body.extend_from_slice(&(name.len() as u16).to_le_bytes()); // NAME_SZ
+        body.extend_from_slice(&attr.to_le_bytes());                // ATTR
+        body.extend_from_slice(name.as_bytes());
+        // dict-size bits: 64K (0x20) — ignored for store
+        rar4_block(&mut out, RAR4_FILE,
+                   LHD_LONG_BLOCK | 0x0020, &body, Some(data.len() as u32));
+        out.extend_from_slice(&data);
+    }
+    // end-of-archive block
+    rar4_block(&mut out, RAR4_END, 0, &[], None);
+    std::fs::write(path, &out)?;
+    Ok(members.len())
+}
+
+fn collect_paths(root: &Path, p: &Path, out: &mut Vec<(PathBuf, String)>) {
+    if p.is_dir() {
+        if let Ok(rd) = std::fs::read_dir(p) {
+            for e in rd.flatten() {
+                collect_paths(root, &e.path(), out);
+            }
+        }
+    } else if p.is_file() {
+        // archive name = basename + path relative to the given root's parent
+        let base = root.parent().unwrap_or_else(|| Path::new(""));
+        let rel = p.strip_prefix(base).unwrap_or(p)
+            .to_string_lossy().replace('\\', "/");
+        out.push((p.to_path_buf(), rel));
+    }
+}
 
 #[derive(Default, Clone)]
 pub struct RarOpts {

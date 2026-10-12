@@ -916,13 +916,15 @@ impl UnRARApp {
                     ui.end_row();
                     ui.label("Format:");
                     egui::ComboBox::from_id_salt("fmt")
-                        .selected_text(["ZIP", "RAR", "TAR", "TAR.GZ",
+                        .selected_text(["ZIP", "RAR (store, built-in)",
+                                        "RAR (via WinRAR)", "TAR", "TAR.GZ",
                                         "TAR.BZ2", "TAR.XZ", "TAR.ZST"]
                                         [d.format_idx])
                         .show_ui(ui, |ui| {
-                            for (i, f) in ["ZIP", "RAR", "TAR", "TAR.GZ",
-                                           "TAR.BZ2", "TAR.XZ", "TAR.ZST"]
-                                           .iter().enumerate() {
+                            for (i, f) in ["ZIP", "RAR (store, built-in)",
+                                           "RAR (via WinRAR)", "TAR",
+                                           "TAR.GZ", "TAR.BZ2", "TAR.XZ",
+                                           "TAR.ZST"].iter().enumerate() {
                                 ui.selectable_value(&mut d.format_idx, i, *f);
                             }
                         });
@@ -950,7 +952,7 @@ impl UnRARApp {
                                 "Create self-extracting archive (SFX .exe)");
                             ui.end_row();
                         }
-                        1 => {
+                        2 => {
                             ui.label("Password:");
                             ui.add(egui::TextEdit::singleline(&mut d.password)
                                 .password(true));
@@ -986,13 +988,13 @@ impl UnRARApp {
                     if ui.button("OK").clicked() { do_create = true; }
                     if ui.button("Cancel").clicked() { cancel = true; }
                 });
-                ui.small("RAR writing uses the installed WinRAR Rar.exe.");
+                ui.small("'RAR (store)' is self-contained; 'via WinRAR' needs Rar.exe.");
             });
         if cancel { open = false; }
         self.add_dlg.open = open;
         if do_create {
             let d = std::mem::take(&mut self.add_dlg);
-            const EXTS: [&str; 7] = ["zip", "rar", "tar", "tar.gz",
+            const EXTS: [&str; 8] = ["zip", "rar", "rar", "tar", "tar.gz",
                                      "tar.bz2", "tar.xz", "tar.zst"];
             let ext = EXTS[d.format_idx];
             let mut out = PathBuf::from(&d.name);
@@ -1043,13 +1045,19 @@ impl UnRARApp {
                             Ok(Msg::Done("Archive created".into()))
                         }
                         1 => {
+                            engine::rar4_store_create(&out, &files)
+                                .map(|n| Msg::Done(format!(
+                                    "RAR created ({n} files, stored)")))
+                                .map_err(|e| e.to_string())
+                        }
+                        2 => {
                             engine::rar_create(&out, &files, &ropts)
                                 .map(Msg::Done).map_err(|e| e.to_string())
                         }
                         _ => {
                             let fmt = [Format::Tar, Format::Gz, Format::Bz2,
                                        Format::Xz, Format::Zst]
-                                       [fmt_idx - 2];
+                                       [fmt_idx - 3];
                             engine::tar_create(&out, &files, fmt)
                                 .map(|n| Msg::Done(
                                     format!("TAR created ({n} items)")))

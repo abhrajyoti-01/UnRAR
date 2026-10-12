@@ -38,15 +38,18 @@ written in **Rust** (egui/eframe GUI). MIT licensed — contains no RARLAB code.
 | Format | List | Extract | Test | Create | Notes |
 |---|---|---|---|---|---|
 | ZIP | ✔ | ✔ | ✔ | ✔ | AES-256 encrypt/decrypt, comments, SFX |
-| RAR/RAR5, .rev | ✔ | ✔ | ✔ | ✔* | read: vendored UnRAR (in-process); write: drives installed `Rar.exe` (level -m0..5, -p, -s solid, -rr3 recovery, -k lock, -md dict, -v volumes) |
+| RAR/RAR5, .rev | ✔ | ✔ | ✔ | ✔ | read: vendored UnRAR (in-process); write: **built-in RAR4 store writer** (no deps) or `Rar.exe` for real compression when WinRAR is installed |
 | 7z | ✔ | ✔ | ✔ | ✘ | via `sevenz-rust` |
 | TAR/GZ/BZ2/XZ/ZST | ✔ | ✔ | ✔ | ✔ | native `tar` + codec writers |
 | CAB | detect | — | — | — | listed as supported-only |
 
-\* RAR **compression** is proprietary (RARLAB) — no legal open encoder
-exists, so UnRAR creates `.rar` by driving the licensed `Rar.exe`
-(`C:\Program Files\WinRAR\Rar.exe`, override via `UNRAR_RAR_EXE`).
-Reading/decoding RAR is fully native and needs nothing installed.
+**RAR writing is now fully independent**: `RAR (store, built-in)` writes
+spec-compliant RAR4 store archives in-process — validated byte-level
+against unrar's own header parser and tested by RARLAB's `UnRAR.exe`
+(All OK). No compression (members stored raw) since the compressor is
+proprietary. The `RAR (via WinRAR)` option additionally offers real
+compression (`-m0..-m5`, `-p`, `-s`, `-rr3`, `-k`, `-md`, `-v`) when an
+installed `Rar.exe` is found.
 
 ## Build
 
