@@ -352,6 +352,42 @@ def extract_archive(path: str, dest: str, members: list[str] | None = None,
     raise EngineError(f"Extracting {fmt} needs an external backend")
 
 
+def read_member(path: str, name: str, pwd: str | None = None,
+                limit: int = 32 * 1024 * 1024) -> bytes:
+    """Read one archive member into memory (for the internal viewer)."""
+    fmt = detect_format(path)
+    if fmt == "zip":
+        with zipfile.ZipFile(path) as zf:
+            try:
+                with zf.open(name, pwd=pwd.encode() if pwd else None) as fh:
+                    return fh.read(limit)
+            except RuntimeError as e:
+                raise EngineError(str(e)) from e
+    if fmt in ("rar", "rev"):
+        exe = find_unrar()
+        if not exe:
+            raise EngineError("RAR backend not found (UNRAR_EXE).")
+        args = [exe, "p", "-inul"]
+        if pwd:
+            args.append(f"-p{pwd}")
+        # UnRAR 'p' needs a * wildcard to match members inside folders and
+        # an absolute archive path (rc 10 otherwise).
+        args += ["--", os.path.abspath(path),
+                 "*" + name.replace("\\", "/").rsplit("/", 1)[-1]]
+        proc = subprocess.run(args, capture_output=True)
+        if proc.returncode > 1:
+            raise EngineError(proc.stderr.decode("utf-8", "replace").strip()
+                              or "Cannot read member")
+        return proc.stdout[:limit]
+    if fmt in ("tar", "gz", "bz2", "xz"):
+        with tarfile.open(path, "r:*") as tf:
+            fh = tf.extractfile(name)
+            if fh is None:
+                raise EngineError(f"'{name}' is not a file")
+            return fh.read(limit)
+    raise EngineError(f"Reading {fmt} members needs an external backend")
+
+
 def test_archive(path: str) -> tuple[bool, str]:
     """Verify integrity (CRC where available). Returns (ok, detail)."""
     fmt = detect_format(path)

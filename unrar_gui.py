@@ -11,7 +11,6 @@ import os
 import queue
 import stat
 import sys
-import tempfile
 import threading
 import tkinter as tk
 from datetime import datetime
@@ -55,6 +54,88 @@ def _save_cfg(cfg: dict):
         CFG_FILE.write_text(json.dumps(cfg, indent=1), encoding="utf-8")
     except OSError:
         pass
+
+
+def _is_binary(data: bytes) -> bool:
+    sample = data[:8192]
+    if not sample:
+        return False
+    if b"\x00" in sample:
+        return True
+    printable = sum(1 for b in sample if b in b"\t\n\r" or 32 <= b < 127
+                    or b >= 128)
+    return printable / len(sample) < 0.75
+
+
+def _hexdump(data: bytes) -> str:
+    lines = []
+    for off in range(0, len(data), 16):
+        chunk = data[off:off + 16]
+        hx = " ".join(f"{b:02x}" for b in chunk)
+        hx = f"{hx[:23]} {hx[23:]}" if len(hx) > 23 else hx
+        asc = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
+        lines.append(f"{off:08x}  {hx:<49}  {asc}")
+    return "\n".join(lines)
+
+
+class Viewer(tk.Toplevel):
+    """WinRAR-style internal viewer: text / hex display of a member."""
+
+    def __init__(self, parent: "UnRARApp", name: str, data: bytes):
+        super().__init__(parent)
+        self.title(f"UnRAR viewer - {name}")
+        self.geometry("760x520")
+        self._data = data
+        self._hex = _is_binary(data)
+
+        top = ttk.Frame(self, padding=(4, 4))
+        top.pack(side=tk.TOP, fill=tk.X)
+        ttk.Button(top, text="Text", width=8,
+                   command=lambda: self._render(False)).pack(side=tk.LEFT)
+        ttk.Button(top, text="Hex", width=8,
+                   command=lambda: self._render(True)).pack(side=tk.LEFT,
+                                                            padx=4)
+        self._stat = ttk.Label(top, text="")
+        self._stat.pack(side=tk.RIGHT)
+
+        frame = ttk.Frame(self)
+        frame.pack(fill=tk.BOTH, expand=True)
+        self._text = tk.Text(frame, wrap="none", font=("Consolas", 9),
+                             state=tk.DISABLED)
+        vsb = ttk.Scrollbar(frame, orient=tk.VERTICAL,
+                            command=self._text.yview)
+        hsb = ttk.Scrollbar(frame, orient=tk.HORIZONTAL,
+                            command=self._text.xview)
+        self._text.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        self._text.grid(row=0, column=0, sticky="nsew")
+        vsb.grid(row=0, column=1, sticky="ns")
+        hsb.grid(row=1, column=0, sticky="ew")
+        frame.rowconfigure(0, weight=1)
+        frame.columnconfigure(0, weight=1)
+
+        self._render(self._hex)
+        self.bind("<Escape>", lambda e: self.destroy())
+
+    def _render(self, hex_mode: bool):
+        self._hex = hex_mode
+        if hex_mode:
+            body = _hexdump(self._data)
+            mode = "hex"
+        else:
+            try:
+                body = self._data.decode("utf-8")
+                enc = "UTF-8"
+            except UnicodeDecodeError:
+                body = self._data.decode("cp1252", "replace")
+                enc = "cp1252"
+            mode = f"text/{enc}"
+        self._text.configure(state=tk.NORMAL)
+        self._text.delete("1.0", tk.END)
+        self._text.insert("1.0", body)
+        self._text.configure(state=tk.DISABLED)
+        nlines = body.count("\n") + 1
+        self._stat.config(
+            text=f"{len(self._data):,} bytes | {nlines:,} lines | {mode}")
 
 
 class UnRARApp(tk.Tk):
@@ -355,14 +436,14 @@ class UnRARApp(tk.Tk):
 
     # ---- background worker ----
 
-    def _run_bg(self, fn, done_msg: str):
+    def _run_bg(self, fn, done_msg: str, then=None):
         def work():
             try:
                 result = fn()
             except Exception as e:              # noqa: BLE001 -> shown to user
                 self._q.put(("error", str(e)))
             else:
-                self._q.put(("done", (result, done_msg)))
+                self._q.put(("done", (result, done_msg, then)))
         self._set_status("Working…")
         self.configure(cursor="watch")
         threading.Thread(target=work, daemon=True).start()
@@ -378,10 +459,17 @@ class UnRARApp(tk.Tk):
                 self._set_status("Error")
                 messagebox.showerror(APP_TITLE, payload)
             else:
-                result, done_msg = payload
-                self._set_status(done_msg.format(result=result))
-                if self.archive_path:
-                    self._reload()
+                result, done_msg, then = payload
+                if then is not None:
+                    try:
+                        then(result)
+                    except Exception as e:      # noqa: BLE001
+                        messagebox.showerror(APP_TITLE, str(e))
+                    self._set_status("Done.")
+                else:
+                    self._set_status(done_msg.format(result=result))
+                    if self.archive_path:
+                        self._reload()
         self.after(80, self._poll_queue)
 
     def _reload(self):
@@ -514,28 +602,18 @@ class UnRARApp(tk.Tk):
         if not names or not self.archive_path:
             return
         name = names[0]
-        tmp = tempfile.mkdtemp(prefix="unrar_view_")
+        ent = next((e for e in (self.info.entries if self.info else [])
+                    if e.name == name), None)
+        if ent and ent.is_dir:
+            return
         pwd = None
-        if self.info and eng.is_encrypted(self.info):
+        if ent and ent.encrypted:
             pwd = simpledialog.askstring(APP_TITLE, "Password:", show="*")
-
-        def work():
-            eng.extract_archive(self.archive_path, tmp, [name], pwd)
-            return name
-
-        self._run_bg(work, "Viewed {result}")
-        # launch the file once extraction completes (max ~30s)
-        attempts = [0]
-
-        def launch():
-            attempts[0] += 1
-            target = os.path.join(tmp, name)
-            if os.path.isfile(target):
-                os.startfile(target)            # noqa: S606 — local file open
-            elif attempts[0] < 60:
-                self.after(500, launch)
-
-        self.after(500, launch)
+            if pwd is None:
+                return
+        self._run_bg(lambda: eng.read_member(self.archive_path, name, pwd),
+                     "Opened {result}",
+                     then=lambda data: Viewer(self, name, data))
 
     def cmd_delete(self):
         names = self._selected_names()

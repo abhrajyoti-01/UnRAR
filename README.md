@@ -3,14 +3,13 @@
 A WinRAR-style archive manager for Windows — GUI + CLI, released as
 **open source under the MIT license**.
 
-Ships as two executables built from the *same* source tree:
+Ships as a single executable:
 
-- **`UnRAR.exe`** — graphical archive manager (windowed)
-- **`unrar-cli.exe`** — console tool with real-unrar-style commands
-  (named `unrar-cli` because Windows is case-insensitive: `unrar.exe`
-  would overwrite `UnRAR.exe`)
+- **`UnRAR.exe`** — graphical archive manager (windowed), prebuilt in
+  [`dist/`](dist/). No Python required.
 
-Prebuilt binaries live in [`dist/`](dist/). No Python required to run them.
+A console interface with real-unrar-style commands is available from
+source: `python unrar.py l|t|x|a|i <args>` (not shipped as an exe).
 
 ## Features
 
@@ -26,24 +25,18 @@ Prebuilt binaries live in [`dist/`](dist/). No Python required to run them.
 - RAR reading delegates to the freeware `UnRAR.exe` backend — found
   automatically in `C:\Program Files\WinRAR`, on `PATH`, next to the app, or
   via the `UNRAR_EXE` environment variable.
-- GUI: sortable Name/Size/Packed/Ratio/Modified/CRC32/Method columns,
-  Add / Extract-to / Test / View / Delete / Info, keyboard shortcuts,
-  drag-free file-open, threaded operations with a status bar.
+- GUI: sortable Name/Size/Packed/Type/Modified/CRC32/Ratio/Method columns,
+  Add / Extract-to / Test / Delete / Info toolbar, Ctrl+F find bar,
+  right-click menu, ZIP comment editor, archive lock, recent archives.
+- **Internal viewer** — double-click or Enter opens a member directly in a
+  viewer window (text auto-detected; hex mode with offset/ASCII dump;
+  toggle Text/Hex). No temp extraction or external app needed.
 
-## Run the executables
+## Run
 
 ```console
 UnRAR.exe                  :: GUI
 UnRAR.exe archive.zip      :: GUI opens an archive directly
-
-unrar-cli.exe                  :: usage (like real unrar)
-unrar-cli.exe l archive.zip    :: list
-unrar-cli.exe t archive.zip    :: test CRCs
-unrar-cli.exe x a.rar outdir   :: extract all
-unrar-cli.exe x a.zip f.txt    :: extract one member
-unrar-cli.exe a new.zip f dir  :: create/add to ZIP
-unrar-cli.exe i archive.rar    :: info
-unrar-cli.exe gui archive.zip  :: launch the GUI from the CLI exe
 ```
 
 ## Run from source
@@ -60,8 +53,7 @@ python -m pip install -r requirements-build.txt
 build_exe.bat
 ```
 
-Produces `dist\UnRAR.exe` (windowed) and `dist\unrar.exe` (console) with
-embedded version info.
+Produces `dist\UnRAR.exe` (windowed) with embedded version info.
 
 ## Source layout
 
